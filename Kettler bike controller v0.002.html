@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="en"><head><title>Kettler Bike Controller</title><script src='https://cdn.plot.ly/plotly-2.27.0.min.js'></script></head><body>
+<style>h1{margin: 0;color: black;}body, h1, h2, h3, h4, h5, h6 {font-family: Arial, Helvetica, sans-serif; margin: 4;}table.data td, table.data th{border: 0px solid;text-align: center;font-size:30px;}</style>
+<H1>Kettler Bike Controller</H1>
+<p id='intro'>This software can be used to execute protocols on the Kettler Ergometer Bike and read data.<br>
+Make sure the <a href='https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads' target='_blank'>Silicon Labs CP210X UART driver</a> is installed. </p>
+<table border=0><tr><td><button id='connection'>Connect bike</button></td><td><button id='start' onclick='startprotocol()'>start protocol</button> <button id='stopcollecting' onclick='off()' hidden>Stop collecting</button></td><td><button id='download' onClick="download()">Download data</button> </td></tr></table>
+<table border=0><tr><th>Insert rows of: duration in minutes, Watts</th></tr><tr><td><textarea id="powertable" rows="8" cols="10">2.5,60
+2.5,80
+2.5,100
+2.5,80
+2.5,60
+</textarea></td></tr></table>
+
+<table border=1 style="width:100%" class="data"><tr><th>Duration</th><th>Watts</th><th>Heart rate</th><th>Cadence</th></tr><tr><td id="Duration">N/A</td><td id="Watts">N/A</td><td id="Heart_rate">N/A</td><td id="Cadence">N/A</td></tr></table>
+<table><tr><td><span id='time_graph'></span></td><td><span id='power_graph'></span></td></tr></table>
+<script>
+//https://developer.chrome.com/en/articles/serial/
+const textEncoder = new TextEncoderStream();
+const textDecoder = new TextDecoderStream();
+const reader = textDecoder.readable.getReader();
+const writer = textEncoder.writable.getWriter();
+const filters = [{usbVendorId:4292,usbProductId:60000}];
+const headings=["Heart_rate","Cadence","KPH","km","Watts","kJ","Duration","Watts"];
+var data={};var state=false;var collecting=false; var starttime='';
+var bpmtrace={x:[],y:[],mode:'markers',type:'scatter'};
+var efficiencytrace={x:[],y:[],mode:'markers',type:'scatter'};
+var bpmlayout={yaxis:{title:{text:'Heart Rate (bmp)'}},xaxis:{title:{text:'Time (s)'}}};
+var efficiencylayout={yaxis:{title:{text:'Heart Rate (bmp)'}},xaxis:{title:{text:'Power (W)'}}};
+Plotly.newPlot('time_graph',[bpmtrace],bpmlayout);
+Plotly.newPlot('power_graph',[efficiencytrace],efficiencylayout);
+document.querySelector('button').addEventListener('click', async () => {
+    try{
+        const port=await navigator.serial.requestPort({filters});
+        if(port.readable==null){await port.open({baudRate: 9600, dataBits:8, stopBits:1, parity:'none' });const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);}
+        state=true;document.getElementById('connection').style.background='green';
+    }
+    catch(error){state=false;document.getElementById('connection').style.background='red';}
+    document.getElementById('start').disabled=true;
+    document.getElementById('intro').innerHTML="";    
+    await bikeInit();
+    document.getElementById('start').disabled=false;           
+});
+async function startprotocol(){document.getElementById('stopcollecting').hidden=false;document.getElementById('start').hidden=true;collecting=true;await getData()}
+function off(){collecting=false;document.getElementById('stopcollecting').hidden=true;document.getElementById('start').hidden=false;console.log(data);}
+async function getData(){ 
+    powers=parse();
+    starttime=new Date().getTime();
+    var powerstep=0;var numpowers=Object.keys(powers).length;
+    if(state==true){setPower(powers[powerstep]['Watts']);}
+    //000,092,328,000,025,0001,00:13,025 probably HR, cadence, speed*10,distance*10,power, kJ,duration,actual power
+      while(collecting){
+          await pause(1);
+          var ctime=+new Date().getTime()-starttime;
+          data[ctime]=await getStatus();
+          if(powerstep<numpowers){if(data[ctime][6]>powers[powerstep]['Time']){powerstep+=1;if(state==true){setPower(powers[powerstep]['Watts']);}}}
+          update_panel(data[ctime]);
+          bpmtrace['x'].push(data[ctime][6]);bpmtrace['y'].push(+data[ctime][0]);
+          efficiencytrace['x'].push(+data[ctime][4]);efficiencytrace['y'].push(+data[ctime][0]);
+          Plotly.redraw('time_graph');Plotly.redraw('power_graph');
+    }
+}
+function download(){
+    var blob = new Blob([DataObjectToCSV(data)]);
+    var a = window.document.createElement("a");
+    a.href = window.URL.createObjectURL(blob, {type: "text/plain"});
+    a.download ="Kettler data "+new Date(+Object.keys(data)[0]).toISOString()+".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+async function pause(time){await new Promise(resolve => setTimeout(resolve, time*1000)) .then(() => {});}
+function DataObjectToCSV(dataobj){
+    csv='';
+    for(var heads in headings){csv+=headings[heads]+",";};
+    csv+="\r\n";
+    for(var rows in dataobj){for (vala in dataobj[rows]){csv+=dataobj[rows][vala]+",";} csv+="\r\n";}            ;    
+    return(csv)
+}
+function mmss(str){var p=str.split(':'),s=0,m=1;while(p.length>0){s+=m*parseInt(p.pop(),10);m*=60;}return s;}
+function update_panel(array){for(i in headings){var cell=document.getElementById(headings[i]);if(cell){cell.innerHTML=array[i];}}}
+function parse(){var powers={};var accTime=0; var text=document.getElementById('powertable').value;text=text.split("\n");for(var i in text){var a=text[i].split(",");accTime+=+a[0]*60;powers[i]={Time:accTime,Watts:+a[1]};}return powers;}
+function getFake(){var ctime=new Date().getTime()-starttime;var status=["120","90","30","1","100","5",ctime/1000,"100"];return status;}
+async function readLine(){var string=''; while(string.indexOf("\n")==-1) {const {value,done}=await reader.read();string+=value;}return(string);}
+async function getStatus(){if(state==true){await writer.write("ST\n");status=await readLine();statusarray=status.replace("\r\n","").split("\t");var seconds=mmss(statusarray[6]);statusarray[6]=seconds;return statusarray;}else{return getFake();}}
+async function bikeInit(){if(state==true){await writer.write("RS\n");await pause(2);await writer.write("CM\n");await readLine();}else{await pause(2);}}
+async function setPower(watts){await writer.write("PW"+watts+"\n");await readLine();}
+</script></body></html>
